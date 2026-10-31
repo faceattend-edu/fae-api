@@ -1,0 +1,227 @@
+package com.faceattend_edu.identity_service.adapter.in.web.controller;
+
+import com.faceattend_edu.identity_service.adapter.in.web.SessionCookie;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.AuthRequest;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.RefreshSessionRequest;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.TwoFactorCodeRequest;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.TwoFactorPasswordRequest;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.TwoFactorStatusDto;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.UserDto;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.UserSessionDto;
+import com.faceattend_edu.identity_service.adapter.in.web.dto.VerifyLoginCodeRequest;
+import com.faceattend_edu.identity_service.adapter.in.web.mapper.UserSessionWebMapper;
+import com.faceattend_edu.identity_service.adapter.in.web.mapper.UserWebMapper;
+import com.faceattend_edu.identity_service.application.port.in.AuthenticateUserUseCase;
+import com.faceattend_edu.identity_service.application.port.in.CloseUserSessionUseCase;
+import com.faceattend_edu.identity_service.application.port.in.GetUserByUsernameUseCase;
+import com.faceattend_edu.identity_service.application.port.in.GetUserSessionUseCase;
+import com.faceattend_edu.identity_service.application.port.in.ManageTwoFactorUseCase;
+import com.faceattend_edu.identity_service.application.port.in.VerifyLoginCodeUseCase;
+import com.faceattend_edu.identity_service.application.port.in.RefreshSessionUseCase;
+import com.faceattend_edu.identity_service.domain.exception.EntityNotFoundException;
+import com.faceattend_edu.identity_service.domain.exception.TwoFactorRequiredException;
+import com.faceattend_edu.identity_service.domain.exception.UnauthorizedException;
+import com.faceattend_edu.identity_service.domain.exception.ValidationException;
+import com.faceattend_edu.identity_service.domain.model.User;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/v1/auth")
+@RequiredArgsConstructor
+public class AuthController {
+
+    private final AuthenticateUserUseCase authenticateUserUseCase;
+    private final CloseUserSessionUseCase closeUserSessionUseCase;
+    private final GetUserByUsernameUseCase getUserByUsernameUseCase;
+    private final RefreshSessionUseCase refreshSessionUseCase;
+    private final VerifyLoginCodeUseCase verifyLoginCodeUseCase;
+    private final ManageTwoFactorUseCase manageTwoFactorUseCase;
+    private final UserSessionWebMapper sessionWebMapper;
+    private final UserWebMapper userWebMapper;
+    private final SessionCookie sessionCookie;
+    private final GetUserSessionUseCase getUserSessionUseCase;
+
+    /**
+     * With {@code X-Session-Mode: cookie} (the web) the new session travels in an HttpOnly cookie and the body no
+     * longer carries its id; without it (mobile, scripts) the response is the same as always.
+     */
+    private ResponseEntity<UserSessionDto> opened(UserSessionDto dto, HttpServletRequest http) {
+        return sessionCookie.requested(http) ? inCookie(dto) : ResponseEntity.ok(dto);
+    }
+
+    private ResponseEntity<UserSessionDto> inCookie(UserSessionDto dto) {
+        if (dto.getSessionId() == null) return ResponseEntity.ok(dto);
+        String cookie = sessionCookie.issue(dto.getSessionId()).toString();
+        dto.setSessionId(null);
+        return ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie).body(dto);
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<UserSessionDto> login(@Valid @RequestBody AuthRequest authRequest, HttpServletRequest http) {
+        try {
+            return opened(sessionWebMapper.toDto(
+                    authenticateUserUseCase.authenticate(authRequest.getIdentifier(), authRequest.getPassword(), loginIp(http))), http);
+        } catch (TwoFactorRequiredException challenge) {
+            // 200 without a session: the client asks for the e-mailed code and calls /login/verify.
+            UserSessionDto pending = new UserSessionDto();
+            pending.setTwoFactorRequired(true);
+            pending.setMaskedEmail(challenge.getMaskedEmail());
+            return ResponseEntity.ok(pending);
+        }
+    }
+
+    /** Second step of a login with two-factor: the e-mailed code opens the session. */
+    @PostMapping("/login/verify")
+    public ResponseEntity<UserSessionDto> verifyLogin(@Valid @RequestBody VerifyLoginCodeRequest request, HttpServletRequest http) {
+        return opened(sessionWebMapper.toDto(
+                verifyLoginCodeUseCase.verify(request.getIdentifier(), request.getCode())), http);
+    }
+
+    /** Starts enabling the second factor: checks the password and e-mails a code. */
+    @PostMapping("/two-factor/enable")
+    public ResponseEntity<TwoFactorStatusDto> requestEnableTwoFactor(@Valid @RequestBody TwoFactorPasswordRequest request,
+                                                                     HttpServletRequest http) {
+        String masked = manageTwoFactorUseCase.requestEnable(caller(http), request.getPassword());
+        return ResponseEntity.accepted().body(new TwoFactorStatusDto(false, masked));
+    }
+
+    /** Finishes enabling with the e-mailed code. */
+    @PostMapping("/two-factor/confirm")
+    public ResponseEntity<TwoFactorStatusDto> confirmTwoFactor(@Valid @RequestBody TwoFactorCodeRequest request,
+                                                               HttpServletRequest http) {
+        manageTwoFactorUseCase.confirmEnable(caller(http), request.getCode());
+        return ResponseEntity.ok(new TwoFactorStatusDto(true, null));
+    }
+
+    @PostMapping("/two-factor/disable")
+    public ResponseEntity<TwoFactorStatusDto> disableTwoFactor(@Valid @RequestBody TwoFactorPasswordRequest request,
+                                                               HttpServletRequest http) {
+        manageTwoFactorUseCase.disable(caller(http), request.getPassword());
+        return ResponseEntity.ok(new TwoFactorStatusDto(false, null));
+    }
+
+    private static UUID caller(HttpServletRequest http) {
+        Object caller = http.getAttribute("X-User-Id");
+        if (caller == null) {
+            throw new UnauthorizedException("Authentication required");
+        }
+        return UUID.fromString(String.valueOf(caller));
+    }
+
+    /**
+     * Rotación de la sesión opaca (refresh token): devuelve un sessionId nuevo
+     * y el anterior queda cerrado. Falla con 401 si la sesión venció o ya fue
+     * renovada (un solo uso).
+     */
+    @PostMapping("/refresh")
+    public ResponseEntity<UserSessionDto> refresh(@RequestBody(required = false) RefreshSessionRequest request,
+                                                  HttpServletRequest httpRequest) {
+        // The session comes in the body (mobile) or, for the web, in its cookie: with no body the cookie is the only source.
+        boolean bodyHasSession = request != null && request.getSessionId() != null;
+        UUID current = bodyHasSession ? request.getSessionId() : sessionCookie.read(httpRequest).orElse(null);
+        if (current == null) throw new ValidationException("sessionId is required");
+        UserSessionDto renewed = sessionWebMapper.toDto(refreshSessionUseCase.refresh(current, clientIp(httpRequest)));
+        return sessionCookie.requested(httpRequest) || !bodyHasSession ? inCookie(renewed) : ResponseEntity.ok(renewed);
+    }
+
+    private static String clientIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
+    }
+
+    /**
+     * Client address for the per-IP login limit. Kong sets X-Real-IP from the real client
+     * (trusted_ips + real_ip_header behind Caddy); X-Forwarded-For is not used here because
+     * its first hop is whatever the client sent.
+     */
+    private static String loginIp(HttpServletRequest request) {
+        String realIp = request.getHeader("X-Real-IP");
+        return realIp != null && !realIp.isBlank() ? realIp.trim() : request.getRemoteAddr();
+    }
+
+    /**
+     * The session to close travels as the bearer: a query string ends up in the gateway and proxy
+     * access logs, and a session id is a credential. `?sessionId=` is still read for the mobile
+     * builds already installed; the header wins when both come.
+     */
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                       @RequestParam(value = "sessionId", required = false) UUID legacySessionId,
+                                       HttpServletRequest http) {
+        UUID fromCookie = sessionCookie.read(http).orElse(null);
+        UUID sessionId = bearerSessionId(authorization);
+        if (sessionId == null) sessionId = fromCookie != null ? fromCookie : legacySessionId;
+        if (sessionId == null) return ResponseEntity.badRequest().build();
+        closeUserSessionUseCase.closeSession(sessionId);
+        // A web client also loses its cookie, so the browser stops sending a session that no longer exists.
+        if (fromCookie != null || sessionCookie.requested(http)) {
+            return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, sessionCookie.clear().toString()).build();
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Who the session in use is: user, status, start, end and whether the password must change. The web calls it
+     * on load because it cannot read its own session any more (HttpOnly cookie). The session id is never returned.
+     * It reads the Bearer, which the gateway fills in from the cookie; the cookie itself is the fallback.
+     */
+    @GetMapping("/session")
+    public ResponseEntity<UserSessionDto> currentSession(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                                         HttpServletRequest http) {
+        UUID sessionId = bearerSessionId(authorization);
+        if (sessionId == null) sessionId = sessionCookie.read(http).orElse(null);
+        if (sessionId == null) throw new UnauthorizedException("Authentication required");
+        UserSessionDto dto;
+        try {
+            dto = sessionWebMapper.toDto(getUserSessionUseCase.getUserSession(sessionId));
+        } catch (EntityNotFoundException e) {
+            throw new UnauthorizedException("Invalid or expired session");
+        }
+        if (!"Active".equalsIgnoreCase(dto.getSessionStatus())) throw new UnauthorizedException("Invalid or expired session");
+        dto.setSessionId(null);
+        return ResponseEntity.ok(dto);
+    }
+
+    private static UUID bearerSessionId(String authorization) {
+        if (authorization == null || !authorization.regionMatches(true, 0, "Bearer ", 0, 7)) return null;
+        try {
+            return UUID.fromString(authorization.substring(7).trim());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Perfil de la propia cuenta. Exige sesión (el filtro ya no lo deja público) y solo
+     * resuelve la cuenta de quien llama: un identificador ajeno responde 404 para no
+     * revelar si existe.
+     */
+    @GetMapping("/me")
+    public ResponseEntity<UserDto> me(@RequestParam(required = false) String username,
+                                      @RequestParam(required = false) String email,
+                                      HttpServletRequest request) {
+        Object caller = request.getAttribute("X-User-Id");
+        if (caller == null) {
+            throw new UnauthorizedException("Authentication required");
+        }
+        String identifier = username != null && !username.isBlank() ? username : email;
+        if (identifier == null || identifier.isBlank()) {
+            throw new ValidationException("username or email is required");
+        }
+        User user = getUserByUsernameUseCase.getUserByUsername(identifier);
+        if (user.getUserId() == null || !user.getUserId().toString().equalsIgnoreCase(String.valueOf(caller))) {
+            throw new EntityNotFoundException("User", identifier);
+        }
+        return ResponseEntity.ok(userWebMapper.toDto(user));
+    }
+}

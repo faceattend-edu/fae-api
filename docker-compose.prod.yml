@@ -1,0 +1,78 @@
+# =========================================================================
+# FaceAttend EDU — fae-api overlay de PRODUCCIÓN (Neon Cloud + Caddy TLS)
+# =========================================================================
+# Uso:
+#   docker compose --env-file .env.prod `
+#     -f docker-compose.yml `
+#     -f docker-compose.neon-overrides.yml `
+#     -f docker-compose.prod.yml `
+#     up -d --build
+# =========================================================================
+
+services:
+
+  # Kong en producción: solo accesible desde Caddy en la red fae-edge
+  kong-gateway:
+    ports: !reset
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8001:8001"
+
+  # =========================================================================
+  # Portainer CE — gestión visual de contenedores (solo loopback)
+  # =========================================================================
+  portainer:
+    image: portainer/portainer-ce:2.21.5-alpine@sha256:58dc56847e9829098ca743f0d978fa3be018312fc2ba63bd2b520f2c1f35011a
+    container_name: fae-portainer
+    command: -H unix:///var/run/docker.sock
+    ports:
+      - "127.0.0.1:9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    networks:
+      - fae-data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+  # =========================================================================
+  # Caddy 2 — Reverse proxy TLS solo para API (modo API-only)
+  # =========================================================================
+  caddy:
+    image: caddy:2.8-alpine@sha256:880f181c36dc83a4769262eb3661bbba8e918e5ef050a2be374e2a027ba5d952
+    container_name: fae-caddy
+    depends_on:
+      kong-gateway:
+        condition: service_healthy
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?API_DOMAIN is required (ej. api.tu-dominio.com)}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      fae-edge:
+        ipv4_address: 10.204.10.101
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+volumes:
+  portainer_data:
+  caddy_data:
+  caddy_config:

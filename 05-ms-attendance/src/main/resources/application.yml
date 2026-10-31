@@ -1,0 +1,62 @@
+server:
+  port: 8085
+spring:
+  config:
+    # Host runs (mvn/IDE) also read the repo-root .env, so one file governs
+    # Docker and local runs alike. The optional paths are anchored at the
+    # working directory (service dir or repo root); in Docker compose injects
+    # the environment, so this import stays a no-op.
+    import: "optional:file:${user.dir}/../../.env[.properties],optional:file:${user.dir}/.env[.properties]"
+  application:
+    name: attendance-service
+  datasource:
+    url: jdbc:postgresql://localhost:${POSTGRES_PORT:5432}/faceattend_db?stringtype=unspecified
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+    hikari:
+      # Fan-out del frontend (introspecciones + negocio en paralelo): el default
+      # de 10 conexiones encolaba hilos y cada request pagaba ~700 ms.
+      maximum-pool-size: 25
+      minimum-idle: 5
+      connection-timeout: 5000
+      schema: attendance
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.default_schema: attendance
+      hibernate.globally_quoted_identifiers: true
+      hibernate.hbm2ddl.create_namespaces: true
+  kafka:
+    bootstrap-servers: localhost:9092
+  servlet:
+    multipart:
+      # ERF 6.1: supporting documents up to 5 MB (the request carries a little more).
+      max-file-size: 5MB
+      max-request-size: 6MB
+  liquibase:
+    # Las migraciones viven en ../database/ (fuente canonica); el servicio no auto-migra.
+    enabled: false
+faceattend:
+  # MinIO (ADR-009). Credentials come only from the environment (FACEATTEND_STORAGE_*).
+  storage:
+    endpoint: http://localhost:9000
+    bucket: justification-documents
+  auth:
+    identity-url: http://localhost:8081
+    authorization-url: http://localhost:8082
+    # Tolerancia de tardanza por sede (N-14).
+    configuration-url: http://localhost:8087
+  attendance:
+    # Zona horaria de las sedes: contra ella se compara la hora de llegada con el inicio del bloque.
+    zone: America/Bogota
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

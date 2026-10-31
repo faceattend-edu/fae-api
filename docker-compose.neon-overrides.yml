@@ -1,0 +1,74 @@
+# =========================================================================
+# Override de fae-api para usar Neon Cloud en vez de PostgreSQL local
+# =========================================================================
+# Uso:
+#   docker compose --env-file .env.prod \
+#     -f docker-compose.yml \
+#     -f docker-compose.neon-overrides.yml \
+#     up -d --build
+# =========================================================================
+
+services:
+
+  ms-identity:
+    ports: !reset []
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${DB_HOST:?DB_HOST is required}:${DB_PORT:-5432}/${DB_NAME:-neondb}?currentSchema=identity&sslmode=${DB_SSLMODE:-require}&channelBinding=${DB_CHANNEL_BINDING:-require}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_MAX_POOL:-3}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: ${HIKARI_MIN_IDLE:-0}
+      SPRINGDOC_API_DOCS_ENABLED: "false"
+      SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+
+  ms-authorization:
+    ports: !reset []
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${DB_HOST}:${DB_PORT:-5432}/${DB_NAME:-neondb}?currentSchema=authorization&sslmode=${DB_SSLMODE:-require}&channelBinding=${DB_CHANNEL_BINDING:-require}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_MAX_POOL:-3}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: ${HIKARI_MIN_IDLE:-0}
+      SPRINGDOC_API_DOCS_ENABLED: "false"
+      SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+
+  ms-scheduling:
+    ports: !reset []
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${DB_HOST}:${DB_PORT:-5432}/${DB_NAME:-neondb}?currentSchema=scheduling&sslmode=${DB_SSLMODE:-require}&channelBinding=${DB_CHANNEL_BINDING:-require}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_MAX_POOL:-3}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: ${HIKARI_MIN_IDLE:-0}
+      SPRINGDOC_API_DOCS_ENABLED: "false"
+      SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+
+  ms-attendance:
+    ports: !reset []
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${DB_HOST}:${DB_PORT:-5432}/${DB_NAME:-neondb}?currentSchema=attendance&sslmode=${DB_SSLMODE:-require}&channelBinding=${DB_CHANNEL_BINDING:-require}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_MAX_POOL:-3}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: ${HIKARI_MIN_IDLE:-0}
+      SPRINGDOC_API_DOCS_ENABLED: "false"
+      SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+
+  ms-academic:
+    ports: !reset []
+    environment:
+      DB_SSL: "true"
+      DB_POOL_MAX: ${NODE_DB_POOL_MAX:-3}
+
+  ms-configuration:
+    ports: !reset []
+    environment:
+      DB_SSL: "true"
+      DB_POOL_MAX: ${NODE_DB_POOL_MAX:-3}
+
+  ms-biometric:
+    ports: !reset []
+    environment:
+      BIOMETRIC_POSTGRES_SSL: "true"
+      BIOMETRIC_DOCS_ENABLED: "false"
+
+  ms-notification:
+    ports: !reset []
+    environment:
+      DB_SSL: "true"
+      DB_POOL_MAX: ${NODE_DB_POOL_MAX:-3}
+
+  ms-quality:
+    ports: !reset []

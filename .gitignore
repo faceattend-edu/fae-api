@@ -1,0 +1,21 @@
+# Entorno: cada repo tiene su .env local; solo la plantilla se versiona
+.env
+.env.*
+!.env.example
+
+# Dependencias y artefactos
+node_modules/
+dist/
+build/
+target/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE y logs
+.vscode/
+.idea/
+*.log
+*.swp
+*.tmp
